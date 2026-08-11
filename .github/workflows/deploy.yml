@@ -48,9 +48,16 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.MGC_SSH_PRIVATE_KEY }}
 
-      - name: Copy manifests to VM
+      - name: Render app manifest with image tag
         run: |
-          scp -o StrictHostKeyChecking=no -r k8s ubuntu@201.23.85.207:~/deploy-manifests
+          IMAGE_FULL="${{ env.REGISTRY }}/${{ secrets.MGC_REGISTRY_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          # Replace the whole image line in app.yaml (keeps indentation)
+          sed "s|^\(\s*image:\).*|\1 ${IMAGE_FULL}|" k8s/app.yaml > k8s/app-rendered.yaml
+
+      - name: Copy manifests to VM (including rendered app.yaml)
+        run: |
+          scp -o StrictHostKeyChecking=no k8s/app-rendered.yaml ubuntu@201.23.85.207:~/deploy-manifests/app.yaml
+          scp -o StrictHostKeyChecking=no -r k8s/hpa.yaml k8s/servicemonitor.yaml ubuntu@201.23.85.207:~/deploy-manifests/
 
       - name: Deploy on remote VM
         env:
@@ -58,16 +65,14 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=no ubuntu@201.23.85.207 \
             "REGISTRY_USER=${{ secrets.MGC_REGISTRY_USER }} \
-            REGISTRY_PASSWORD=${{ secrets.MGC_REGISTRY_PASSWORD }} \
-            DATABASE_URL=${{ secrets.DATABASE_URL }} \
-            bash -s" <<'EOF'
+             REGISTRY_PASSWORD=${{ secrets.MGC_REGISTRY_PASSWORD }} \
+             DATABASE_URL=${{ secrets.DATABASE_URL }} \
+             bash -s" <<'EOF'
             set -e
             export KUBECONFIG=$HOME/.kube/config
             cd ~/deploy-manifests
             export REGISTRY=${{ env.REGISTRY }}
             export REGISTRY_NAME=${{ secrets.MGC_REGISTRY_NAME }}
-            export IMAGE_NAME=${{ env.IMAGE_NAME }}
-            export IMAGE_TAG=${IMAGE_TAG}
             # Create Docker registry secret
             kubectl create secret docker-registry registry-secret \
               --docker-server=${REGISTRY} \
@@ -78,8 +83,8 @@ jobs:
             kubectl create secret generic db-secret \
               --from-literal=url=${DATABASE_URL} \
               --dry-run=client -o yaml | kubectl apply -f -
-            echo "Applying manifests with image $REGISTRY/$REGISTRY_NAME/$IMAGE_NAME:$IMAGE_TAG"
-            envsubst < app.yaml | kubectl apply -f -
+            echo "Applying rendered app.yaml"
+            kubectl apply -f app.yaml
             kubectl apply -f hpa.yaml
             kubectl apply -f servicemonitor.yaml
             kubectl -n default patch svc cloud-application -p '{"spec":{"type":"LoadBalancer"}}'
