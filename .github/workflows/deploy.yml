@@ -55,6 +55,9 @@ jobs:
       - name: Deploy on remote VM
         env:
           IMAGE_TAG: ${{ github.sha }}
+          REGISTRY_USER: ${{ secrets.MGC_REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.MGC_REGISTRY_PASSWORD }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           ssh -o StrictHostKeyChecking=no ubuntu@201.23.85.207 bash -s <<'EOF'
             set -e
@@ -64,6 +67,16 @@ jobs:
             export REGISTRY_NAME=${{ secrets.MGC_REGISTRY_NAME }}
             export IMAGE_NAME=${{ env.IMAGE_NAME }}
             export IMAGE_TAG=${IMAGE_TAG}
+            # Create Docker registry secret
+            kubectl create secret docker-registry registry-secret \
+              --docker-server=${REGISTRY} \
+              --docker-username=${REGISTRY_USER} \
+              --docker-password=${REGISTRY_PASSWORD} \
+              --dry-run=client -o yaml | kubectl apply -f -
+            # Create DB secret
+            kubectl create secret generic db-secret \
+              --from-literal=url=${DATABASE_URL} \
+              --dry-run=client -o yaml | kubectl apply -f -
             echo "Applying manifests with image $REGISTRY/$REGISTRY_NAME/$IMAGE_NAME:$IMAGE_TAG"
             envsubst < app.yaml | kubectl apply -f -
             kubectl apply -f hpa.yaml
