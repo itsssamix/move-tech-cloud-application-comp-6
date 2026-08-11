@@ -55,11 +55,12 @@ jobs:
       - name: Deploy on remote VM
         env:
           IMAGE_TAG: ${{ github.sha }}
-          REGISTRY_USER: ${{ secrets.MGC_REGISTRY_USER }}
-          REGISTRY_PASSWORD: ${{ secrets.MGC_REGISTRY_PASSWORD }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          ssh -o StrictHostKeyChecking=no ubuntu@201.23.85.207 bash -s <<'EOF'
+          ssh -o StrictHostKeyChecking=no ubuntu@201.23.85.207 \
+            "REGISTRY_USER=${{ secrets.MGC_REGISTRY_USER }} \
+            REGISTRY_PASSWORD=${{ secrets.MGC_REGISTRY_PASSWORD }} \
+            DATABASE_URL=${{ secrets.DATABASE_URL }} \
+            bash -s" <<'EOF'
             set -e
             export KUBECONFIG=$HOME/.kube/config
             cd ~/deploy-manifests
