@@ -2,6 +2,8 @@ name: Deploy
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ main ]
 
 env:
   REGISTRY: container-registry.br-se1.magalu.cloud
@@ -11,65 +13,61 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-
-    - uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-
-    - name: Instalar dependências
-      run: |
-        pip install poetry
-        poetry install --no-root
-
-    - name: Executar testes
-      run: poetry run pytest
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar dependências
+        run: |
+          pip install poetry
+          poetry install --no-root
+      - name: Executar testes
+        run: poetry run pytest
 
   build-and-deploy:
     needs: test
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Login no Container Registry
-      run: |
-        docker login https://${{ env.REGISTRY }} \
-          -u ${{ secrets.MGC_REGISTRY_USER }} \
-          -p ${{ secrets.MGC_REGISTRY_PASSWORD }}
+      - name: Login no Container Registry
+        run: |
+          echo "${{ secrets.MGC_REGISTRY_PASSWORD }}" | docker login https://${{ env.REGISTRY }} \
+            -u "${{ secrets.MGC_REGISTRY_USER }}" \
+            --password-stdin
 
-    - name: Build e push da imagem
-      run: |
-        BASE=${{ env.REGISTRY }}/${{ secrets.MGC_REGISTRY_NAME }}/${{ env.IMAGE_NAME }}
-        docker build -t $BASE:${{ github.sha }} -t $BASE:latest .
-        docker push $BASE:${{ github.sha }}
-        docker push $BASE:latest
+      - name: Build e push da imagem
+        run: |
+          BASE=${{ env.REGISTRY }}/${{ secrets.MGC_REGISTRY_NAME }}/${{ env.IMAGE_NAME }}
+          docker build -t $BASE:${{ github.sha }} -t $BASE:latest .
+          docker push $BASE:${{ github.sha }}
+          docker push $BASE:latest
 
-    - name: Configurar kubectl
-      run: |
-        echo "${{ secrets.MGC_KUBECONFIG }}" > kubeconfig.yaml
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.5.4
+        with:
+          ssh-private-key: ${{ secrets.MGC_SSH_PRIVATE_KEY }}
 
-    - name: Criar Secret do registry
-      run: |
-        export KUBECONFIG=kubeconfig.yaml
-        kubectl create secret docker-registry registry-secret \
-          --docker-server=${{ env.REGISTRY }} \
-          --docker-username=${{ secrets.MGC_REGISTRY_USER }} \
-          --docker-password=${{ secrets.MGC_REGISTRY_PASSWORD }} \
-          --dry-run=client -o yaml | kubectl apply -f -
+      - name: Copy manifests to VM
+        run: |
+          scp -o StrictHostKeyChecking=no -r k8s ubuntu@201.23.85.207:~/deploy-manifests
 
-    - name: Criar Secret do banco
-      run: |
-        export KUBECONFIG=kubeconfig.yaml
-        kubectl create secret generic db-secret \
-          --from-literal=url=${{ secrets.DATABASE_URL }} \
-          --dry-run=client -o yaml | kubectl apply -f -
-
-    - name: Deploy no Kubernetes
-      run: |
-        export KUBECONFIG=kubeconfig.yaml
-        export MGC_REGISTRY_NAME=${{ secrets.MGC_REGISTRY_NAME }}
-        export IMAGE_TAG=${{ github.sha }}
-        envsubst < k8s/app.yaml | kubectl apply -f -
-        kubectl apply -f k8s/hpa.yaml
-        kubectl apply -f k8s/servicemonitor.yaml
-        kubectl rollout status deployment/cloud-application
+      - name: Deploy on remote VM
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          ssh -o StrictHostKeyChecking=no ubuntu@201.23.85.207 bash -s <<'EOF'
+            set -e
+            export KUBECONFIG=$HOME/.kube/config
+            cd ~/deploy-manifests
+            export REGISTRY=${{ env.REGISTRY }}
+            export REGISTRY_NAME=${{ secrets.MGC_REGISTRY_NAME }}
+            export IMAGE_NAME=${{ env.IMAGE_NAME }}
+            export IMAGE_TAG=${IMAGE_TAG}
+            echo "Applying manifests with image $REGISTRY/$REGISTRY_NAME/$IMAGE_NAME:$IMAGE_TAG"
+            envsubst < app.yaml | kubectl apply -f -
+            kubectl apply -f hpa.yaml
+            kubectl apply -f servicemonitor.yaml
+            kubectl -n default patch svc cloud-application -p '{"spec":{"type":"LoadBalancer"}}'
+            kubectl rollout status deployment/cloud-application -n default
+          EOF
