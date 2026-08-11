@@ -69,24 +69,30 @@ jobs:
              DATABASE_URL=${{ secrets.DATABASE_URL }} \
              bash -s" <<'EOF'
             set -e
-            export KUBECONFIG=$HOME/.kube/config
+            # Use system kubeconfig with sudo
+            export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
             cd ~/deploy-manifests
             export REGISTRY=${{ env.REGISTRY }}
             export REGISTRY_NAME=${{ secrets.MGC_REGISTRY_NAME }}
+            IMAGE_FULL="${REGISTRY}/${REGISTRY_NAME}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}"
             # Create Docker registry secret
-            kubectl create secret docker-registry registry-secret \
+            sudo kubectl create secret docker-registry registry-secret \
               --docker-server=${REGISTRY} \
               --docker-username=${REGISTRY_USER} \
               --docker-password=${REGISTRY_PASSWORD} \
-              --dry-run=client -o yaml | kubectl apply -f -
+              --dry-run=client -o yaml | sudo kubectl apply -f -
             # Create DB secret
-            kubectl create secret generic db-secret \
+            sudo kubectl create secret generic db-secret \
               --from-literal=url=${DATABASE_URL} \
-              --dry-run=client -o yaml | kubectl apply -f -
-            echo "Applying rendered app.yaml"
-            kubectl apply -f app.yaml
-            kubectl apply -f hpa.yaml
-            kubectl apply -f servicemonitor.yaml
-            kubectl -n default patch svc cloud-application -p '{"spec":{"type":"LoadBalancer"}}'
-            kubectl rollout status deployment/cloud-application -n default
+              --dry-run=client -o yaml | sudo kubectl apply -f -
+            # Update image of the deployment directly
+            sudo kubectl set image deployment/cloud-application cloud-application=${IMAGE_FULL}
+            # Delete existing pods to force new image pull
+            sudo kubectl delete pod -l app=cloud-application
+            # Apply other manifests (service, hpa, servicemonitor)
+            sudo kubectl apply -f app.yaml   # service & other resources are in separate files; keep for safety
+            sudo kubectl apply -f hpa.yaml
+            sudo kubectl apply -f servicemonitor.yaml
+            sudo kubectl -n default patch svc cloud-application -p '{"spec":{"type":"LoadBalancer"}}'
+            sudo kubectl rollout status deployment/cloud-application -n default
           EOF
